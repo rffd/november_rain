@@ -1,0 +1,59 @@
+*&---------------------------------------------------------------------*
+*& Report  Z_KNVH_TEMP_NUM_PER_SA
+*&
+*&---------------------------------------------------------------------*
+*& report to find the number of entries for each combination of
+*& sales area, distribution channel and division
+*&---------------------------------------------------------------------*
+
+REPORT  Z_KNVH_TEMP_NUM_PER_SA.
+
+TABLES: CRM_KNVH_TEMP.
+
+TYPES: BEGIN OF salesarea,
+        VKORG TYPE VKORG,
+        VTWEG TYPE VTWEG,
+        SPART TYPE SPART,
+       END OF salesarea.
+
+DATA: lt_knvh_temp TYPE TABLE OF CRM_KNVH_TEMP,
+      ls_knvh_temp LIKE LINE OF lt_knvh_temp,
+      ls_sales_area TYPE salesarea,
+      lt_sales_area TYPE TABLE OF salesarea,
+      lv_lines TYPE I.
+
+SELECT * FROM CRM_KNVH_TEMP INTO TABLE lt_knvh_temp.
+
+IF lt_knvh_temp IS NOT INITIAL.
+
+  LOOP AT lt_knvh_temp INTO ls_knvh_temp.
+    MOVE-CORRESPONDING ls_knvh_temp TO ls_sales_area.
+    APPEND ls_sales_area TO lt_sales_area.
+  ENDLOOP.
+
+  SORT lt_sales_area ASCENDING BY VKORG VTWEG SPART.
+  DELETE ADJACENT DUPLICATES FROM lt_sales_area COMPARING ALL FIELDS.
+
+  WRITE : 5 'Sales Org'.
+  WRITE : 20 'Dist. Channel'.
+  WRITE : 35 'Division'.
+  WRITE : 45 '# Entries in CRM_KNVH_TEMP'.
+
+  LOOP AT lt_sales_area INTO ls_sales_area.
+
+    SELECT COUNT( * ) FROM
+        CRM_KNVH_TEMP
+           INTO (lv_lines)
+           WHERE VKORG = ls_sales_area-vkorg AND
+                 	         VTWEG = ls_sales_area-vtweg AND
+                           SPART = ls_sales_area-spart.
+
+
+    WRITE : /5 ls_sales_area-vkorg.
+    WRITE : 20 ls_sales_area-vtweg.
+    WRITE : 35 ls_sales_area-spart.
+    WRITE : 45 lv_lines.
+
+  ENDLOOP.
+
+ENDIF.
