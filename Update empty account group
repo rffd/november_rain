@@ -1,0 +1,216 @@
+*&---------------------------------------------------------------------*
+*& Report  Z_UPDATE_ACCNT_GROUP
+*&
+*&---------------------------------------------------------------------*
+*& 1. Check if partner exists in mapping table (transferred to R/3 or
+*&    not. If it does, check if partner exists in BUT000. If it does,
+*&    check if there is an entry in CRMM_BUT_FRG0040. If not, add to
+*&    an internal table of partners.
+*& 2. Dip into R/3 and get the account group from KNA1-KTOKD
+*& 3. If the account group is not blank, update the CRMM_BUT_FRG0040
+*&    table, and the CRMM_BUT_FRG0041 table (set IS_CUSTOMER flag also).
+*&---------------------------------------------------------------------*
+*& Input: Range of R/3 Customer numbers
+*& Output: DB update of account group in table CRMM_BUT_FRG0041.
+*&---------------------------------------------------------------------*
+REPORT  z_update_accnt_group.
+
+TABLES: crmm_but_custno, crmm_but_frg0040, crmm_but_frg0041.
+
+TYPES: BEGIN OF ty_partners,
+        guid          LIKE CHAR32,
+        customer_no   LIKE crmm_but_custno-customer_no,
+       END OF ty_partners,
+
+       BEGIN OF ty_customers,
+         guid         LIKE but000-partner_guid,
+         customer_no  LIKE crmm_but_custno-customer_no,
+         account_group    LIKE crmm_but_custno-account_group,
+       END OF ty_customers.
+
+DATA: lv_partner      LIKE but000-partner,
+      lv_partner_guid LIKE but000-partner_guid,
+      lv_customer_no  LIKE crmm_but_custno-customer_no,
+
+      lt_crmm_but_custno TYPE TABLE OF crmm_but_custno,
+      ls_crmm_but_custno TYPE crmm_but_custno,
+
+      ls_crmm_but_frg0040_updt LIKE crmm_but_frg0040,
+      ls_crmm_but_frg0041_temp LIKE crmm_but_frg0041,
+
+      lt_crmm_but_frg0041_updt LIKE crmm_but_frg0041 OCCURS 0 WITH
+        HEADER LINE,
+
+      lt_but000 LIKE but000 OCCURS 0 WITH HEADER LINE,
+      ls_but000 LIKE lt_but000,
+
+      lt_partners TYPE TABLE OF ty_partners,
+      ls_partners LIKE LINE OF lt_partners,
+
+      lt_customers TYPE TABLE OF ty_customers,
+      ls_customers LIKE LINE OF lt_customers,
+
+      lv_r3_guid TYPE GUID_32,
+      lv_crm_guid TYPE GUID_16.
+
+DATA: lt_smoferpsh LIKE smof_erpsh OCCURS 1 WITH HEADER LINE,
+      ls_smoferpsh TYPE smof_erpsh,
+      yesno(1) TYPE c,
+      lv_lines TYPE i.
+
+
+SELECT-OPTIONS: s_cust FOR crmm_but_custno-customer_no OBLIGATORY.
+
+PARAMETERS:     p_test AS CHECKBOX DEFAULT 'X'.
+
+*------------------------------------------------------------
+CLEAR: lv_partner, lv_partner_guid, lv_customer_no,
+       lt_crmm_but_custno, ls_crmm_but_custno, ls_crmm_but_frg0040_updt,
+       ls_crmm_but_frg0041_temp, lt_crmm_but_frg0041_updt, lt_partners,
+       ls_partners, lt_customers, ls_customers.
+
+REFRESH: lt_crmm_but_custno, lt_crmm_but_frg0041_updt, lt_partners,
+         lt_customers, lt_smoferpsh.
+*------------------------------------------------------------
+
+yesno = 'N'.
+
+IF p_test <> 'X'.
+  CALL FUNCTION 'POPUP_TO_CONFIRM'
+   EXPORTING
+    titlebar   = 'Database Update!!'
+    text_question =
+    'Are you sure you want to update database table CRMM_BUT_FRG0041?'
+    text_button_1  = 'Yes'
+    text_button_2  = 'No'
+    default_button = 2
+   IMPORTING
+    answer     = yesno.
+ENDIF.
+
+SELECT * FROM crmm_but_custno INTO TABLE lt_crmm_but_custno WHERE
+  customer_no IN s_cust.
+
+APPEND lt_crmm_but_custno.
+
+DESCRIBE TABLE lt_crmm_but_custno LINES lv_lines.
+
+IF lv_lines = 0.
+  " nothing was selected
+  WRITE:/ 'Partner(s) do not exist in mapping table CRMM_BUT_CUSTNO'.
+ENDIF.
+
+LOOP AT lt_crmm_but_custno INTO ls_crmm_but_custno.
+
+  lv_partner_guid = ls_crmm_but_custno-partner_guid.
+  lv_customer_no  = ls_crmm_but_custno-customer_no.
+
+  SELECT SINGLE partner INTO lv_partner FROM but000
+    WHERE partner_guid EQ lv_partner_guid.
+
+  IF sy-subrc = 0. "partner exists in mapping table and but000.
+
+    SELECT * FROM crmm_but_frg0040
+      INTO ls_crmm_but_frg0040_updt
+      WHERE partner_guid = lv_partner_guid.
+    ENDSELECT.
+
+    IF sy-subrc = 0. "entry exists in CRMM_BUT_FRG0040
+
+      SELECT SINGLE * INTO ls_crmm_but_frg0041_temp
+        FROM crmm_but_frg0041
+       WHERE partner_guid = lv_partner_guid AND account_group = ' '.
+
+      IF sy-subrc = 0.
+        "entry exists in FRG0041, without account group.
+        CLEAR: ls_partners, lv_r3_guid.
+        
+        CALL METHOD cl_ibase_service=>cl_convert_guid_16_32
+          EXPORTING
+                i_guid = lv_partner_guid
+          RECEIVING
+                r_guid = lv_r3_guid.
+
+        IF lv_r3_guid IS NOT INITIAL.
+          ls_partners-guid = lv_r3_guid.
+          ls_partners-customer_no = lv_customer_no.
+          APPEND ls_partners TO lt_partners.
+        ENDIF.
+      ENDIF.
+
+    ELSE.
+      " do nothing, if entry does not exist in FRG0040, we assume
+      " it does not exist in FRG0041.
+    ENDIF.
+
+  ENDIF.
+  CLEAR: ls_crmm_but_custno, lv_partner_guid, lv_customer_no,
+         ls_crmm_but_frg0040_updt, ls_crmm_but_frg0041_temp.
+ENDLOOP.
+
+CHECK sy-subrc = 0.
+
+* Get KNA1-KTOKD from R/3
+CALL FUNCTION 'SMOF_READ_SMOFERPSH'
+  EXPORTING
+    i_sitetypeid = 'SMOF_ERPSITE'
+  TABLES
+    t_erpsites   = lt_smoferpsh.
+
+READ TABLE lt_smoferpsh INTO ls_smoferpsh INDEX 1.
+
+IF sy-subrc NE 0 OR ls_smoferpsh-rfcdest = space.
+  WRITE: 'No RFC destination/ mutiple RFC destinations detected'.
+  EXIT.
+ENDIF.
+
+IF lt_partners IS NOT INITIAL.
+  CALL FUNCTION 'Z_GET_ACCOUNT_GROUP'
+    DESTINATION ls_smoferpsh-rfcdest
+    TABLES
+      t_partners  = lt_partners
+      t_customers = lt_customers.
+ENDIF.
+
+CLEAR: lv_r3_guid, lv_crm_guid.
+
+WRITE: 'Results of correction report:'.
+
+LOOP AT lt_customers INTO ls_customers.
+  
+  lv_r3_guid = ls_customers-guid.
+  
+  CALL METHOD cl_ibase_service=>cl_convert_guid_32_16
+    EXPORTING
+        i_guid = lv_r3_guid
+    RECEIVING
+        r_guid = lv_crm_guid.
+
+  CHECK ls_customers-account_group IS NOT INITIAL.
+  
+  IF yesno EQ '1' AND lv_crm_guid IS NOT INITIAL.
+    "database update confirmed with "Yes"
+    TRY.
+        UPDATE crmm_but_frg0041
+          SET account_group = ls_customers-account_group
+          WHERE partner_guid = lv_crm_guid.
+        COMMIT WORK.
+        WRITE: 'CRMM_BUT_FRG0041 updated for customer:'.
+        WRITE: ls_customers-customer_no.
+        WRITE /.
+      CATCH cx_sy_dynamic_osql_error.
+    ENDTRY.
+  ELSE.
+    WRITE: 'CRMM_BUT_FRG0041 test updated for customer:'.
+    WRITE: ls_customers-customer_no.
+    WRITE /.
+  ENDIF.
+
+ENDLOOP.
+
+IF sy-subrc NE 0.
+  WRITE: 'No customer account groups returned from R/3 !'.
+ENDIF.
+
+REFRESH: lt_crmm_but_custno, lt_crmm_but_frg0041_updt, lt_partners,
+         lt_customers, lt_smoferpsh.
